@@ -3,6 +3,7 @@ package main
 import (
 	"RTTServer/internal/client"
 	"RTTServer/internal/tcp"
+	"RTTServer/internal/utils"
 	"encoding/json"
 	"log"
 	"net"
@@ -21,14 +22,16 @@ const (
 )
 
 type RTTRecord struct {
-	IP            string    `json:"ip"`
-	TCPI_RTT_us   uint32    `json:"tcpi_rtt_us"`
-	RTT_ms        float64   `json:"tcpi_rtt_ms"`
-	TCPI_VAR_us   uint32    `json:"tcpi_rttvar_us"`
-	RTTVar_ms     float64   `json:"tcpi_rttvar_ms"`
-	IDProbeGlabal string    `json:"id_probe_globalping,omitempty"`
-	GlobalpingRTT float64   `json:"globalping_rtt_ms,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	IP               string             `json:"ip"`
+	TCPI_RTT_us      uint32             `json:"tcpi_rtt_us"`
+	RTT_ms           float64            `json:"tcpi_rtt_ms"`
+	TCPI_VAR_us      uint32             `json:"tcpi_rttvar_us"`
+	RTTVar_ms        float64            `json:"tcpi_rttvar_ms"`
+	IDProbeGlabal    string             `json:"id_probe_globalping,omitempty"`
+	GlobalpingRTT    float64            `json:"globalping_rtt_ms,omitempty"`
+	InfoProbes       []client.ProbeInfo `json:"info_probes,omitempty"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+	DistanceToServer float64            `json:"distance_to_server_km,omitempty"`
 }
 
 type cacheStore struct {
@@ -161,23 +164,26 @@ func handleConn(c net.Conn, cache *cacheStore) {
 		log.Printf("tcp_info %s: %v", remoteIP, err)
 		return
 	}
-	country, region, city, err := client.ClientIPAPI(remoteIP)
+	country, region, city, lat, lon, err := client.ClientIPAPI(remoteIP)
 	if err != nil {
 		log.Printf("ip-api %s: %v", remoteIP, err)
 	}
-	id, gpRTTms, err := client.ClientGlobalping(country, region, city)
+	distanceToServer := utils.Haversine(36.102, -115.1447, lat, lon)
+	agg, err := client.ClientGlobalping(country, region, city)
 	if err != nil {
 		log.Printf("globalping %s: %v", remoteIP, err)
 	}
 	rec := RTTRecord{
-		IP:            remoteIP,
-		TCPI_RTT_us:   rttUS,
-		RTT_ms:        float64(rttUS) / 1000.0,
-		TCPI_VAR_us:   rttVarUS,
-		RTTVar_ms:     float64(rttVarUS) / 1000.0,
-		IDProbeGlabal: id,
-		GlobalpingRTT: gpRTTms,
-		UpdatedAt:     time.Now(),
+		IP:               remoteIP,
+		DistanceToServer: distanceToServer,
+		TCPI_RTT_us:      rttUS,
+		RTT_ms:           float64(rttUS) / 1000.0,
+		TCPI_VAR_us:      rttVarUS,
+		RTTVar_ms:        float64(rttVarUS) / 1000.0,
+		IDProbeGlabal:    agg.MeasurementID,
+		GlobalpingRTT:    agg.RTTMedianMS,
+		InfoProbes:       agg.Probes,
+		UpdatedAt:        time.Now(),
 	}
 	cache.set(rec)
 	log.Printf("updated ip=%s rtt=%.3fms var=%.3fms", rec.IP, rec.RTT_ms, rec.RTTVar_ms)

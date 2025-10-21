@@ -1,6 +1,7 @@
 package client
 
 import (
+	"RTTServer/internal/utils"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -48,11 +49,38 @@ type measurementGetResp struct {
 }
 
 type probeResult struct {
-	ProbeID string          `json:"probeId"`
-	Result  json.RawMessage `json:"result"`
+	Probe  probeMeta       `json:"probe"`
+	Result json.RawMessage `json:"result"`
 }
-type tracerouteResult struct {
-	Hops []trHop `json:"hops"`
+
+type probeMeta struct {
+	Continent string   `json:"continent"`
+	Country   string   `json:"country"`
+	State     string   `json:"state"`
+	City      string   `json:"city"`
+	ASN       int      `json:"asn"`
+	Network   string   `json:"network"`
+	Longitude float64  `json:"longitude"`
+	Latitude  float64  `json:"latitude"`
+	Tags      []string `json:"tags"`
+}
+
+type ProbeInfo struct {
+	IP        *string `json:"ip,omitempty"`
+	RTTms     float64 `json:"rtt_ms"`
+	Longitude float64 `json:"longitude,omitempty"`
+	Latitude  float64 `json:"latitude,omitempty"`
+	ASN       int     `json:"asn,omitempty"`
+	Network   string  `json:"network,omitempty"`
+	Country   string  `json:"country,omitempty"`
+	City      string  `json:"city,omitempty"`
+	Distance  float64 `json:"distance_km,omitempty"`
+}
+
+type GlobalpingAgg struct {
+	MeasurementID string      `json:"id_probe_globalping"`
+	RTTMedianMS   float64     `json:"globalping_rtt_ms"`
+	Probes        []ProbeInfo `json:"info_probes"`
 }
 type trHop struct {
 	Timings []trTiming `json:"timings"`
@@ -61,44 +89,44 @@ type trTiming struct {
 	RTT float64 `json:"rtt"`
 }
 
-func ClientGlobalping(country, region, city string) (string, float64, error) {
+func ClientGlobalping(country, region, city string) (GlobalpingAgg, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return tracerouteTCP(ctx, country, region, city)
 }
 
-func tracerouteTCP(ctx context.Context, country, region, city string) (string, float64, error) {
+func tracerouteTCP(ctx context.Context, country, region, city string) (GlobalpingAgg, error) {
 	if city != "" {
 		if id, apiErr, err := postOnce(ctx, &location{City: city}); err != nil {
-			return "", 0, err
+			return GlobalpingAgg{}, err
 		} else if apiErr == nil {
-			return waitAndExtractRTT(ctx, id)
+			return waitAndExtractAgg(ctx, id)
 		} else if apiErr.Error.Type != "no_probes_found" {
-			return "", 0, fmt.Errorf("%s: %s", apiErr.Error.Type, apiErr.Error.Message)
+			return GlobalpingAgg{}, fmt.Errorf("%s: %s", apiErr.Error.Type, apiErr.Error.Message)
 		}
 	}
 
 	if region != "" {
 		if id, apiErr, err := postOnce(ctx, &location{Region: region}); err != nil {
-			return "", 0, err
+			return GlobalpingAgg{}, err
 		} else if apiErr == nil {
-			return waitAndExtractRTT(ctx, id)
+			return waitAndExtractAgg(ctx, id)
 		} else if apiErr.Error.Type != "no_probes_found" {
-			return "", 0, fmt.Errorf("%s: %s", apiErr.Error.Type, apiErr.Error.Message)
+			return GlobalpingAgg{}, fmt.Errorf("%s: %s", apiErr.Error.Type, apiErr.Error.Message)
 		}
 	}
 
 	if country != "" {
 		if id, apiErr, err := postOnce(ctx, &location{Country: country}); err != nil {
-			return "", 0, err
+			return GlobalpingAgg{}, err
 		} else if apiErr == nil {
-			return waitAndExtractRTT(ctx, id)
+			return waitAndExtractAgg(ctx, id)
 		} else if apiErr.Error.Type != "no_probes_found" {
-			return "", 0, fmt.Errorf("%s: %s", apiErr.Error.Message, apiErr.Error.Type)
+			return GlobalpingAgg{}, fmt.Errorf("%s: %s", apiErr.Error.Message, apiErr.Error.Type)
 		}
 	}
 
-	return "", 0, fmt.Errorf("no_probes_found at all levels (city/region/country)")
+	return GlobalpingAgg{}, fmt.Errorf("no_probes_found at all levels (city/region/country)")
 }
 
 func postOnce(ctx context.Context, loc *location) (string, *errResp, error) {
@@ -149,36 +177,45 @@ func postOnce(ctx context.Context, loc *location) (string, *errResp, error) {
 
 	return "", nil, fmt.Errorf("status %s: %s", resp.Status, string(body))
 }
-func waitAndExtractRTT(ctx context.Context, id string) (string, float64, error) {
-	deadline, _ := ctx.Deadline()
-	backoff := 200 * time.Millisecond
+
+func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 	url := fmt.Sprintf("https://api.globalping.io/v1/measurements/%s", id)
+	backoff := 200 * time.Millisecond
+	deadline, _ := ctx.Deadline()
 
 	for {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		req.Header.Set("Accept", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return "", 0, fmt.Errorf("get measurement: %w", err)
+			return GlobalpingAgg{}, fmt.Errorf("get measurement: %w", err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return "", 0, fmt.Errorf("status %s: %s", resp.Status, string(body))
+			return GlobalpingAgg{}, fmt.Errorf("status %s: %s", resp.Status, string(body))
 		}
 
 		var m measurementGetResp
 		if err := json.Unmarshal(body, &m); err != nil {
-			return "", 0, fmt.Errorf("decode: %w", err)
+			return GlobalpingAgg{}, fmt.Errorf("decode: %w", err)
 		}
 
 		switch m.Status {
 		case "finished":
 			rtts := make([]float64, 0, len(m.Results))
-			for _, pr := range m.Results {
-				var tr tracerouteResult
-				if err := json.Unmarshal(pr.Result, &tr); err != nil || len(tr.Hops) == 0 {
+			infos := make([]ProbeInfo, 0, len(m.Results))
+
+			for _, re := range m.Results {
+				var tr struct {
+					Hops []struct {
+						Timings []struct {
+							RTT float64 `json:"rtt"`
+						} `json:"timings"`
+					} `json:"hops"`
+				}
+				if err := json.Unmarshal(re.Result, &tr); err != nil || len(tr.Hops) == 0 {
 					continue
 				}
 				last := tr.Hops[len(tr.Hops)-1]
@@ -190,27 +227,43 @@ func waitAndExtractRTT(ctx context.Context, id string) (string, float64, error) 
 						n++
 					}
 				}
-				if n > 0 {
-					rtts = append(rtts, sum/float64(n))
+				if n == 0 {
+					continue
 				}
-			}
-			if len(rtts) == 0 {
-				return "", 0, fmt.Errorf("finished but no rtt values")
+				avg := sum / float64(n)
+				rtts = append(rtts, avg)
+				distance := utils.Haversine(36.102, -115.1447, re.Probe.Latitude, re.Probe.Longitude)
+				infos = append(infos, ProbeInfo{
+					IP:        nil,
+					RTTms:     avg,
+					Longitude: re.Probe.Longitude,
+					Latitude:  re.Probe.Latitude,
+					ASN:       re.Probe.ASN,
+					Network:   re.Probe.Network,
+					Country:   re.Probe.Country,
+					City:      re.Probe.City,
+					Distance:  distance,
+				})
 			}
 
+			if len(rtts) == 0 {
+				return GlobalpingAgg{}, fmt.Errorf("finished but no rtt values")
+			}
 			sort.Float64s(rtts)
 			median := rtts[len(rtts)/2]
-			return id, median, nil
+
+			return GlobalpingAgg{
+				MeasurementID: id,
+				RTTMedianMS:   median,
+				Probes:        infos,
+			}, nil
 
 		case "error":
-			if m.Error != nil {
-				return "", 0, fmt.Errorf("%s: %s", m.Error.Error.Type, m.Error.Error.Message)
-			}
-			return "", 0, fmt.Errorf("measurement error")
+			return GlobalpingAgg{}, fmt.Errorf("measurement error")
 
 		default:
 			if time.Now().Add(backoff).After(deadline) {
-				return "", 0, fmt.Errorf("timeout waiting for measurement %s", id)
+				return GlobalpingAgg{}, fmt.Errorf("timeout waiting for measurement %s", id)
 			}
 			time.Sleep(backoff)
 			if backoff < time.Second {

@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -75,6 +78,7 @@ type ProbeInfo struct {
 	Country   string  `json:"country,omitempty"`
 	City      string  `json:"city,omitempty"`
 	Distance  float64 `json:"distance_km,omitempty"`
+	HopCount  int     `json:"hop_count,omitempty"`
 }
 
 type GlobalpingAgg struct {
@@ -96,6 +100,7 @@ func ClientGlobalping(country, region, city string) (GlobalpingAgg, error) {
 }
 
 func tracerouteTCP(ctx context.Context, country, region, city string) (GlobalpingAgg, error) {
+	fmt.Println(country, region, city)
 	if city != "" {
 		if id, apiErr, err := postOnce(ctx, &location{City: city}); err != nil {
 			return GlobalpingAgg{}, err
@@ -209,14 +214,46 @@ func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 
 			for _, re := range m.Results {
 				var tr struct {
-					Hops []struct {
-						Timings []struct {
+					RawOutput        string `json:"rawOutput"`
+					ResolvedAddress  string `json:"resolvedAddress"`
+					ResolvedHostname string `json:"resolvedHostname"`
+					Hops             []struct {
+						ResolvedHostname string `json:"resolvedHostname"`
+						ResolvedAddress  string `json:"resolvedAddress"`
+						Timings          []struct {
 							RTT float64 `json:"rtt"`
 						} `json:"timings"`
 					} `json:"hops"`
 				}
 				if err := json.Unmarshal(re.Result, &tr); err != nil || len(tr.Hops) == 0 {
 					continue
+				}
+
+				hopCount := 0
+				targetIP := strings.TrimSpace(tr.ResolvedAddress)
+				targetHost := strings.TrimSpace(tr.ResolvedHostname)
+				for i, h := range tr.Hops {
+					if (targetIP != "" && strings.EqualFold(h.ResolvedAddress, targetIP)) ||
+						(targetHost != "" && strings.EqualFold(h.ResolvedHostname, targetHost)) {
+						hopCount = i + 1
+						break
+					}
+				}
+
+				if hopCount == 0 && tr.RawOutput != "" && (targetIP != "" || targetHost != "") {
+					hopNumRe := regexp.MustCompile(`^\s*(\d+)\s+`)
+					for _, ln := range strings.Split(tr.RawOutput, "\n") {
+						low := strings.ToLower(ln)
+						if (targetIP != "" && strings.Contains(low, strings.ToLower(targetIP))) ||
+							(targetHost != "" && strings.Contains(low, strings.ToLower(targetHost))) {
+							if m := hopNumRe.FindStringSubmatch(ln); len(m) == 2 {
+								if n, err := strconv.Atoi(m[1]); err == nil {
+									hopCount = n
+									break
+								}
+							}
+						}
+					}
 				}
 				last := tr.Hops[len(tr.Hops)-1]
 				var sum float64
@@ -243,6 +280,7 @@ func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 					Country:   re.Probe.Country,
 					City:      re.Probe.City,
 					Distance:  distance,
+					HopCount:  hopCount,
 				})
 			}
 

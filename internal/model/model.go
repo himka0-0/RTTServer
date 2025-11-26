@@ -16,4 +16,5 @@ type RTTRecord struct {
 	InfoProbes       []client.ProbeInfo `json:"info_probes,omitempty"`
 	UpdatedAt        time.Time          `json:"updated_at"`
 	DistanceToServer float64            `json:"distance_to_server_km,omitempty"`
+	Rawdate          []string           `json:"rawdate,omitempty"`
 }

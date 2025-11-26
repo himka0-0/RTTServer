@@ -69,22 +69,24 @@ type probeMeta struct {
 }
 
 type ProbeInfo struct {
-	IP        *string `json:"ip,omitempty"`
-	RTTms     float64 `json:"rtt_ms"`
-	Longitude float64 `json:"longitude,omitempty"`
-	Latitude  float64 `json:"latitude,omitempty"`
-	ASN       int     `json:"asn,omitempty"`
-	Network   string  `json:"network,omitempty"`
-	Country   string  `json:"country,omitempty"`
-	City      string  `json:"city,omitempty"`
-	Distance  float64 `json:"distance_km,omitempty"`
-	HopCount  int     `json:"hop_count,omitempty"`
+	IP         *string  `json:"ip,omitempty"`
+	RTTms      float64  `json:"rtt_ms"`
+	Longitude  float64  `json:"longitude,omitempty"`
+	Latitude   float64  `json:"latitude,omitempty"`
+	ASN        int      `json:"asn,omitempty"`
+	Network    string   `json:"network,omitempty"`
+	Country    string   `json:"country,omitempty"`
+	City       string   `json:"city,omitempty"`
+	Distance   float64  `json:"distance_km,omitempty"`
+	HopCount   int      `json:"hop_count,omitempty"`
+	RawOutputs []string `json:"rawOutputs"`
 }
 
 type GlobalpingAgg struct {
 	MeasurementID string      `json:"id_probe_globalping"`
 	RTTMedianMS   float64     `json:"globalping_rtt_ms"`
 	Probes        []ProbeInfo `json:"info_probes"`
+	RawOutputs    []string    `json:"raw_outputs"`
 }
 type trHop struct {
 	Timings []trTiming `json:"timings"`
@@ -130,7 +132,7 @@ func tracerouteTCP(ctx context.Context, country, region, city string) (Globalpin
 			return GlobalpingAgg{}, fmt.Errorf("%s: %s", apiErr.Error.Message, apiErr.Error.Type)
 		}
 	}
-
+	fmt.Printf("не найдены пробы для country=%q region=%q city=%q\n", country, region, city)
 	return GlobalpingAgg{}, fmt.Errorf("no_probes_found at all levels (city/region/country)")
 }
 
@@ -147,6 +149,7 @@ func postOnce(ctx context.Context, loc *location) (string, *errResp, error) {
 	if loc != nil {
 		reqBody.Locations = []location{*loc}
 	}
+	fmt.Println(reqBody)
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", nil, fmt.Errorf("marshal: %w")
@@ -211,6 +214,7 @@ func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 		case "finished":
 			rtts := make([]float64, 0, len(m.Results))
 			infos := make([]ProbeInfo, 0, len(m.Results))
+			rawOutputs := make([]string, 0, len(m.Results))
 
 			for _, re := range m.Results {
 				var tr struct {
@@ -228,6 +232,8 @@ func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 				if err := json.Unmarshal(re.Result, &tr); err != nil || len(tr.Hops) == 0 {
 					continue
 				}
+
+				rawOutputs = append(rawOutputs, string(body))
 
 				hopCount := 0
 				targetIP := strings.TrimSpace(tr.ResolvedAddress)
@@ -271,16 +277,17 @@ func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 				rtts = append(rtts, avg)
 				distance := utils.Haversine(36.102, -115.1447, re.Probe.Latitude, re.Probe.Longitude)
 				infos = append(infos, ProbeInfo{
-					IP:        nil,
-					RTTms:     avg,
-					Longitude: re.Probe.Longitude,
-					Latitude:  re.Probe.Latitude,
-					ASN:       re.Probe.ASN,
-					Network:   re.Probe.Network,
-					Country:   re.Probe.Country,
-					City:      re.Probe.City,
-					Distance:  distance,
-					HopCount:  hopCount,
+					IP:         nil,
+					RTTms:      avg,
+					Longitude:  re.Probe.Longitude,
+					Latitude:   re.Probe.Latitude,
+					ASN:        re.Probe.ASN,
+					Network:    re.Probe.Network,
+					Country:    re.Probe.Country,
+					City:       re.Probe.City,
+					Distance:   distance,
+					HopCount:   hopCount,
+					RawOutputs: rawOutputs,
 				})
 			}
 
@@ -294,6 +301,7 @@ func waitAndExtractAgg(ctx context.Context, id string) (GlobalpingAgg, error) {
 				MeasurementID: id,
 				RTTMedianMS:   median,
 				Probes:        infos,
+				RawOutputs:    rawOutputs,
 			}, nil
 
 		case "error":

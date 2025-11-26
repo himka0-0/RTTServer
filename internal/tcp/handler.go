@@ -69,6 +69,7 @@ func HandleConn(c net.Conn, store *cache.Store) {
 				agg.MeasurementID = prev.IDProbeGlabal
 				agg.RTTMedianMS = prev.GlobalpingRTT
 				agg.Probes = prev.InfoProbes
+				agg.RawOutputs = prev.Rawdate
 			}
 		} else {
 			agg = res
@@ -77,6 +78,7 @@ func HandleConn(c net.Conn, store *cache.Store) {
 		agg.MeasurementID = prev.IDProbeGlabal
 		agg.RTTMedianMS = prev.GlobalpingRTT
 		agg.Probes = prev.InfoProbes
+		agg.RawOutputs = prev.Rawdate
 	}
 
 	rec := model.RTTRecord{
@@ -90,6 +92,7 @@ func HandleConn(c net.Conn, store *cache.Store) {
 		GlobalpingRTT:    agg.RTTMedianMS,
 		InfoProbes:       agg.Probes,
 		UpdatedAt:        time.Now(),
+		Rawdate:          agg.RawOutputs,
 	}
 	store.Set(rec)
 	log.Printf("updated ip=%s rtt=%.3fms var=%.3fms", rec.IP, rec.RTT_ms, rec.RTTVar_ms)
